@@ -5,3 +5,6 @@ Description: Just another Docker theme
 Version: 0.0.1
 Tags: bootstrap, less
 */
+html {
+  background: tomato;
+}
