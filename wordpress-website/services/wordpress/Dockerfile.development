@@ -1,0 +1,8 @@
+
+# Wordpress for Development
+# by @24HR
+
+FROM wordpress:4.6
+
+# Enable wordpress refetching the theme
+RUN sed -i "s/opcache.revalidate_freq=60/opcache.revalidate_freq=0/g" /usr/local/etc/php/conf.d/opcache-recommended.ini

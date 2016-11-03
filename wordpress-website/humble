@@ -1,0 +1,376 @@
+#/bin/bash
+
+#
+# Docker Compose Wrapper
+# ----------------------
+# It helps to run overrides of a basic docker compose sourcing the informations
+# from a local ".env" file.
+#
+#     // .env
+#     HUMBLE_ENV=default
+#
+#     // cli:
+#     ./humble up --->
+#     docker-compose -f docker-compose.yml up
+#
+# ----------------------
+#     // .env
+#     HUMBLE_ENV=dev
+#
+#     // cli:
+#     ./humble up --->
+#     docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# NOTE:
+# ".env" will be sourced into the "docker-compose.yml" file too,
+# if you want to specify strings variables you need to export them:
+#
+#     export WEBSITE_TITLE="Just another Wordpress blog"
+#
+
+
+# Default name for the project environment description
+# an optional override file is also loaded, the intention is to le the
+# app to describe herself in the $ENV_CONFIG but some other changes
+# can be injected from external services like the DockerProxy project.
+ENV_CONFIG=.env
+ENV_LOCAL=.env.local
+ENV_OVERRIDE=.env.override
+
+# Default environment values
+HUMBLE_ENV=development
+HUMBLE_PORT=8080
+
+# Validate environment
+ENV_IS_VALID=false
+[ -f $ENV_CONFIG ] && ENV_IS_VALID=true
+[ -f $ENV_OVERRIDE ] && ENV_IS_VALID=true
+if [ $ENV_IS_VALID == false ]; then
+    echo ">>"
+    echo ">> \"$ENV_CONFIG\" not found, switch to default values"
+    echo ">> (you may experience some troubles...)"
+    echo ">>"
+    sleep 2
+fi
+
+# Command is mandatory
+PROJECT_CMD=$1
+if [[ -z $PROJECT_CMD ]]; then
+    echo "Please input a command"
+    echo "[$ALLOWED_COMMANDS]"
+    exit 1
+fi
+
+# Compose the environment override string
+# this will be passed to docker-compose instruction later on
+ENV_OVERRIDE_VARS=""
+if [ -f $ENV_LOCAL ]; then
+    ENV_OVERRIDE_VARS=$(source $ENV_LOCAL && [[ ! -z ${HUMBLE_ENV+x} ]] && ENV_OVERRIDE_VARS="$ENV_OVERRIDE_VARS HUMBLE_ENV=$HUMBLE_ENV" ; echo $ENV_OVERRIDE_VARS)
+    ENV_OVERRIDE_VARS=$(source $ENV_LOCAL && [[ ! -z ${HUMBLE_PORT+x} ]] && ENV_OVERRIDE_VARS="$ENV_OVERRIDE_VARS HUMBLE_PORT=$HUMBLE_PORT" ; echo $ENV_OVERRIDE_VARS)
+    ENV_OVERRIDE_VARS=$(source $ENV_LOCAL && [[ ! -z ${HUMBLE_HOST+x} ]] && ENV_OVERRIDE_VARS="$ENV_OVERRIDE_VARS HUMBLE_HOST=$HUMBLE_HOST" ; echo $ENV_OVERRIDE_VARS)
+fi
+if [ -f $ENV_OVERRIDE ]; then
+    ENV_OVERRIDE_VARS=$(source $ENV_OVERRIDE && [[ ! -z ${HUMBLE_ENV+x} ]] && ENV_OVERRIDE_VARS="$ENV_OVERRIDE_VARS HUMBLE_ENV=$HUMBLE_ENV" ; echo $ENV_OVERRIDE_VARS)
+    ENV_OVERRIDE_VARS=$(source $ENV_OVERRIDE && [[ ! -z ${HUMBLE_PORT+x} ]] && ENV_OVERRIDE_VARS="$ENV_OVERRIDE_VARS HUMBLE_PORT=$HUMBLE_PORT" ; echo $ENV_OVERRIDE_VARS)
+    ENV_OVERRIDE_VARS=$(source $ENV_OVERRIDE && [[ ! -z ${HUMBLE_HOST+x} ]] && ENV_OVERRIDE_VARS="$ENV_OVERRIDE_VARS HUMBLE_HOST=$HUMBLE_HOST" ; echo $ENV_OVERRIDE_VARS)
+fi
+
+
+# Get info about the current environment
+[ -f $ENV_CONFIG ] && source $ENV_CONFIG
+[ -f $ENV_LOCAL ] && source $ENV_LOCAL
+[ -f $ENV_OVERRIDE ] && source $ENV_OVERRIDE
+
+# Load the optional override file
+if [ -f $ENV_OVERRIDE ]; then
+    source $ENV_OVERRIDE
+fi
+
+# Generate the compose override string
+WHICH_COMPOSE=""
+if [[ -f docker-compose.yml ]]; then
+    WHICH_COMPOSE="-f docker-compose.yml"
+fi
+if [[ ! "default" == $HUMBLE_ENV && ! -z $HUMBLE_ENV ]]; then
+    EXTEND_COMPOSE="docker-compose.$HUMBLE_ENV.yml"
+    if [ ! -f $EXTEND_COMPOSE ]; then
+        echo "\"$EXTEND_COMPOSE\" not found!"
+        exit 1
+    fi
+    WHICH_COMPOSE="$WHICH_COMPOSE -f $EXTEND_COMPOSE"
+fi
+
+
+# Compose the `docker-compose` full instruction
+WHICH_DOCKER="$ENV_OVERRIDE_VARS docker-compose $WHICH_COMPOSE"
+WHICH_CMD="$WHICH_DOCKER $@"
+
+# Info
+if [[ "info" == $PROJECT_CMD ]]; then
+    echo ""
+    echo ""
+    echo ""
+    echo "================================================="
+    echo "=== HUMBLE PROJECT =============================="
+    echo "================================================="
+    echo ""
+    echo "HUMBLE_ENV: $HUMBLE_ENV"
+    echo "HUMBLE_PORT: $HUMBLE_PORT"
+    echo "HUMBLE_HOST: $HUMBLE_HOST"
+    echo ""
+    echo ">> Full docker-compose command:"
+    echo ""
+    echo "    $WHICH_CMD"
+    echo ""
+    echo ""
+    echo ""
+    echo ""
+    exit 0
+fi
+
+
+function getContainerId {
+	eval $WHICH_DOCKER ps -q $1
+}
+
+function getContainerRunCmd {
+    STATUS=$(docker inspect --format="{{ .State.Running }}" $1)
+    if [[ "true" == $STATUS ]]; then
+        echo "exec"
+    else
+        echo "run --rm"
+    fi
+}
+
+function urlGetService {
+    SERVICE="`echo $1 | grep '://' | sed -e's,^\(.*://\).*,\1,g'`"
+    if [[ ! -z $SERVICE ]]; then
+        echo ${SERVICE%???}
+    fi
+}
+
+function urlGetPath {
+    SERVICE="`echo $1 | grep '://' | sed -e's,^\(.*://\).*,\1,g'`"
+    if [[ ! -z $SERVICE ]]; then
+        echo "/"$1 | sed -e s,$SERVICE,,g
+    fi
+}
+
+
+#
+# Define some general variables
+#
+
+BACKUP_DELAY=${BACKUP_DELAY:-3}
+BACKUP_ROOT=${BACKUP_ROOT:-"data/backup"}
+BACKUP_DATE_FORMAT=${BACKUP_DATE_FORMAT:-"+%Y%m%d.%H%M%S"}
+
+BACKUP_DATE=$(date $BACKUP_DATE_FORMAT)
+
+PRINT_FEEDBACK="yes"
+P3=$3
+P4=$4
+
+for last; do true; done
+if [ "--now" == "$last" ]; then
+    PRINT_FEEDBACK="no"
+    [ "$P3" == "$last" ] && P3=""
+    [ "$P4" == "$last" ] && P4=""
+fi
+
+# Interface to `docker-utils` image
+if [[ "utils" == "$PROJECT_CMD" ]]; then
+    UTILS_CMD=$2
+
+    if [[ "fs-dump" == "$UTILS_CMD" ]]; then
+
+        BACKUP_FS_DUMP_FORMAT=${BACKUP_FS_DUMP_FORMAT:-"%s___%p___%d"}
+
+        # interpolate target service
+        SERVICE_NAME=$(urlGetService $P3)
+        SERVICE_PATH=$(urlGetPath $P3)
+        SERVICE_CID=$(getContainerId $SERVICE_NAME)
+
+        # compute backup file name
+        BACKUP_TARGET="$PWD/$BACKUP_ROOT"
+        BACKUP_INTERNAL_PATH=$(echo $SERVICE_PATH | tr / .)
+        BACKUP_INTERNAL_PATH=${BACKUP_INTERNAL_PATH:1}
+
+        BACKUP_NAME="${P4:-$BACKUP_NAME}"
+        BACKUP_NAME=${BACKUP_NAME:-$BACKUP_FS_DUMP_FORMAT}
+        BACKUP_NAME="${BACKUP_NAME/\%s/$SERVICE_NAME}"
+        BACKUP_NAME="${BACKUP_NAME/\%p/$BACKUP_INTERNAL_PATH}"
+        BACKUP_NAME="${BACKUP_NAME/\%d/$BACKUP_DATE}.tar.gz"
+
+        # make a nice backup structure
+        SERVICE_PATH_DIRNAME=$(dirname $SERVICE_PATH)
+        SERVICE_PATH_BASENAME=$(basename $SERVICE_PATH)
+
+        if [ "$PRINT_FEEDBACK" == "yes" ]; then
+            echo ""
+            echo "====== UTILS - FS-DUMP ======"
+            echo "service:  $SERVICE_NAME"
+            echo "path:     $SERVICE_PATH"
+            echo "target:   $BACKUP_ROOT/$BACKUP_NAME"
+            echo "(sleep "$BACKUP_DELAY"s, you can abort now)"
+            sleep $BACKUP_DELAY
+            echo ""
+            echo ""
+        fi
+
+        [ "$PRINT_FEEDBACK" == "yes" ] && echo "--> start..."
+        CMD="mkdir -p $BACKUP_TARGET && docker run --rm --volumes-from=$SERVICE_CID -v=$BACKUP_TARGET:/host-working-folder marcopeg/humble tar cvzf /host-working-folder/$BACKUP_NAME -C $SERVICE_PATH_DIRNAME ${SERVICE_PATH_BASENAME:-.}"
+        eval $CMD
+
+        if [ "$PRINT_FEEDBACK" == "yes" ]; then
+            echo ""
+            echo "--> fs-dump complete!"
+            echo ""
+            echo ""
+        fi
+        exit
+    fi
+
+    if [[ "fs-seed" == $UTILS_CMD ]]; then
+
+        BACKUP_FILE=${P3}
+        BACKUP_PATH="$PWD/$BACKUP_ROOT/$BACKUP_FILE"
+
+        if [[ ! -f $BACKUP_PATH ]]; then
+            echo ""
+            echo "====== UTILS - FS-SEED ======"
+            echo "ERROR: Backup file does not exists!"
+            echo "($BACKUP_PATH)"
+            echo ""
+            echo ""
+            exit
+        fi
+
+        # interpolate service string from backup file name
+        SERVICE_STRING=$P4
+        if [[ "" == "$SERVICE_STRING" ]]; then
+            SERVICE_STRING=$BACKUP_FILE
+            SERVICE_STRING="`echo $SERVICE_STRING | grep '___' | sed -e's,^\(.*___\).*,\1,g'`"
+            SERVICE_STRING="${SERVICE_STRING%???}"
+            SERVICE_STRING=$(echo $SERVICE_STRING | tr . /)
+            SERVICE_STRING="${SERVICE_STRING/___/://}"
+        fi
+
+        # interpolate target service
+        SERVICE_NAME=$(urlGetService $SERVICE_STRING)
+        SERVICE_PATH=$(urlGetPath $SERVICE_STRING)
+        SERVICE_CID=$(getContainerId $SERVICE_NAME)
+
+        if [ "$PRINT_FEEDBACK" == "yes" ]; then
+            echo ""
+            echo "====== UTILS - FS-SEED ======"
+            echo "source:   $BACKUP_ROOT/$BACKUP_FILE"
+            echo "service:  $SERVICE_NAME"
+            echo "path:     $SERVICE_PATH"
+            echo "(sleep "$BACKUP_DELAY"s, you can abort now)"
+            sleep $BACKUP_DELAY
+            echo ""
+            echo ""
+        fi
+
+        [ "$PRINT_FEEDBACK" == "yes" ] && echo "--> start..."
+        CMD="docker run --rm --volumes-from=$SERVICE_CID -v=$BACKUP_PATH:/host-backup-source marcopeg/humble sh -c \"mkdir -p $(dirname $SERVICE_PATH) && cd $(dirname $SERVICE_PATH) && tar xvfz /host-backup-source\""
+        eval $CMD
+
+        if [ "$PRINT_FEEDBACK" == "yes" ]; then
+            echo ""
+            echo "--> fs-seed complete!"
+            echo ""
+            echo ""
+        fi
+        exit
+    fi
+
+    if [[ "fs-export" == "$UTILS_CMD" ]]; then
+        SERVICE_NAME=$(urlGetService $3)
+        SERVICE_PATH=$(urlGetPath $3)
+        SOURCE_CID=$(getContainerId $SERVICE_NAME)
+        TARGET_FOLDER=${4:-$(basename $SERVICE_PATH)}
+        TARGET_PATH="$PWD/$TARGET_FOLDER"
+
+        echo ""
+        echo "====== UTILS - FS-EXPORT ======"
+        if [[ "" == "$3" ]]; then
+            echo "ERROR: origin was not set"
+            echo ""
+            echo ""
+            exit
+        fi
+        echo "service:  $SERVICE_NAME"
+        echo "path:     $SERVICE_PATH"
+        echo "target:   $TARGET_PATH"
+        echo "(sleep 3s, you can abort now)"
+        sleep 3
+        echo ""
+        echo ""
+
+        echo "--> start..."
+        CMD="mkdir -p $TARGET_PATH && docker run --rm --volumes-from=$SOURCE_CID -v=$TARGET_PATH:/host-working-folder marcopeg/humble cp -rf $SERVICE_PATH/. /host-working-folder"
+        eval $CMD
+
+        echo "--> fs-export complete!"
+        echo ""
+        echo ""
+        exit
+    fi
+
+    if [[ "fs-import" == "$UTILS_CMD" ]]; then
+        SERVICE_NAME=$(urlGetService $4)
+        SERVICE_PATH=$(urlGetPath $4)
+        SERVICE_CID=$(getContainerId $SERVICE_NAME)
+        SOURCE_PATH="$PWD/$3"
+
+        echo ""
+        echo "====== UTILS - FS-IMPORT ======"
+        if [ ! -d $SOURCE_PATH ]; then
+            echo "ERROR: source folder does not exists"
+            echo "($SOURCE_PATH)"
+            echo ""
+            echo ""
+            exit
+        fi
+        echo "from:     $SOURCE_PATH"
+        echo "service:  $SERVICE_NAME"
+        echo "path:     $SERVICE_PATH"
+        echo "(sleep 3s, you can abort now)"
+        sleep 3
+        echo ""
+        echo ""
+
+        echo "--> start..."
+        CMD="docker run --rm --volumes-from=$SERVICE_CID -v=$SOURCE_PATH:/host-working-folder marcopeg/humble cp -rf /host-working-folder/. $SERVICE_PATH"
+        eval $CMD
+
+        echo "--> fs-import complete!"
+        echo ""
+        echo ""
+        exit
+    fi
+
+    # Run scripts from docker-utils image
+    WHICH_CMD="$ENV_OVERRIDE_VARS docker-compose $WHICH_COMPOSE"
+    EXEC_MODE=$(getContainerRunCmd $(getContainerId humble))
+    TARGET_SCRIPT="${2-seed}.sh ${@:3}"
+    WHICH_CMD="$WHICH_CMD $EXEC_MODE humble /bin/ash /scripts/$TARGET_SCRIPT"
+fi
+
+# Run a project specific script
+if [[ "run" == $PROJECT_CMD ]]; then
+    if [[ "" != "$2" ]]; then
+        SCRIPT_NAME=$2
+        SCRIPT_PATH="./scripts/$SCRIPT_NAME"
+        if [ -f $SCRIPT_PATH ]; then
+            ARGS=${@:3}
+            source $SCRIPT_PATH
+            exit
+        fi
+    fi
+fi
+
+# Wrap docker-compose commands
+eval $WHICH_CMD

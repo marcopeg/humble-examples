@@ -1,0 +1,12 @@
+version: '2'
+services:
+
+    storage:
+        volumes:
+            - /var/lib/mysql
+            - /var/www/html/wp-content
+
+    wordpress:
+        build:
+            context: ./services/wordpress/
+            dockerfile: Dockerfile

@@ -1,0 +1,27 @@
+{
+  "name": "wp-theme-builder",
+  "version": "1.0.0",
+  "description": "build Wordpress themes like a pro!",
+  "main": "Gulpfile.js",
+  "scripts": {
+    "start": "npm install && ./node_modules/.bin/gulp"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marcopeg/humble-examples/wordpress.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/marcopeg/humble-examples/wordpress/issues"
+  },
+  "homepage": "https://github.com/marcopeg/humble-examples/wordpress#readme",
+  "dependencies": {
+    "bootstrap-less": "^3.3.8",
+    "gulp": "^3.9.1",
+    "gulp-less": "^3.1.0",
+    "gulp-minify": "0.0.14",
+    "gulp-watch": "^4.3.9",
+    "less-plugin-autoprefix": "^1.5.1"
+  }
+}
