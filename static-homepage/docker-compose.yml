@@ -1,0 +1,5 @@
+version: '2'
+services:
+    nginx:
+        ports:
+            - ${HUMBLE_PORT}:80
